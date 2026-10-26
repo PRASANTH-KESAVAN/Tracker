@@ -121,7 +121,7 @@ const kv = {
   async get(k){const d=await idb;return new Promise(r=>{const q=d.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>r(q.result)})},
   async set(k,v){const d=await idb;return new Promise(r=>{const t=d.transaction('kv','readwrite');t.objectStore('kv').put(v,k);t.oncomplete=r})}
 };
-let S = {library:[], splits:[], logs:{}};
+let S = {library:[], workouts:[], splits:[], logs:{}, active:null};
 const save = () => kv.set('state', S);
 const uid = () => Math.random().toString(36).slice(2,10);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -190,10 +190,10 @@ function dashboard(){
   const d = new Date(), dow = d.getDay(), dk = dateKey();
   $('#title').textContent = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dow];
   $('#subtitle').textContent = d.toLocaleDateString(undefined,{day:'numeric',month:'long',year:'numeric'});
-  const splits = S.splits.filter(s => s.days.includes(dow));
+  const splits = todayWorkouts(dow);
   let html = '';
   if(!splits.length){
-    html += `<div class="empty"><b>No workout planned today.</b><br>${S.splits.length?'Assign a day to one of your splits.':'Add exercises to your library, then build a split.'}<br><button data-go="${S.splits.length?'splits':'lib'}">${S.splits.length?'Open splits':'Open library'}</button></div>`;
+    html += `<div class="empty"><b>Rest day.</b><br>${S.splits.length?'Nothing is scheduled today in your active split.':S.library.length?'Create workout days, then arrange them into a split.':'Add exercises to your library first.'}<br><button data-go="${S.library.length?'splits':'lib'}">${S.library.length?'Open splits':'Open library'}</button></div>`;
   } else {
     html += `<div id="tsum"></div>`;
     html += splits.map(s => {
@@ -254,7 +254,7 @@ function refreshStats(){
   const t = $('#tsum');
   if(t){
     const planned = {};
-    S.splits.filter(s=>s.days.includes(dow)).forEach(s => s.items.forEach(i => { const e = exById(i.exId); if(e) planned[e.group||'Other'] = (planned[e.group||'Other']||0) + i.sets; }));
+    todayWorkouts(dow).forEach(s => s.items.forEach(i => { const e = exById(i.exId); if(e) planned[e.group||'Other'] = (planned[e.group||'Other']||0) + i.sets; }));
     const a = agg([dk], all);
     const groups = [...new Set([...Object.keys(planned), ...Object.keys(a)])];
     t.innerHTML = `<section class="card pad"><h2>Today by muscle group</h2><div class="tiles">${groups.map(g => { const x = a[g]||{vol:0,sets:0,reps:0,ir:0};
@@ -271,15 +271,25 @@ function refreshStats(){
     <div class="sub" style="margin-top:6px">Volume = weight × reps. Intensity = weight as % of your best estimated 1RM for that exercise.</div></section>`;
 }
 
+const DFULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'], ORDER = [1,2,3,4,5,6,0];
+const activeSplit = () => S.splits.find(x=>x.id===S.active) || S.splits[0];
+const todayWorkouts = dow => { const sp = activeSplit(), w = sp && S.workouts.find(x=>x.id===sp.sched[dow]); return w ? [w] : []; };
+
 function splitsView(){
-  $('#title').textContent = 'Splits'; $('#subtitle').textContent = 'Plan which exercises you do on which days';
-  $('#view').innerHTML = `<button data-new-split>+ New split</button>` + (S.splits.map(s => `
-    <div class="card pad">
-      <div class="dayhead"><h2>${esc(s.name)}</h2>
-        <span class="row"><button class="ghost sm" data-edit-split="${s.id}">Edit</button><button class="danger sm" data-del-split="${s.id}">Delete</button></span></div>
-      <div class="row" style="margin:8px 0">${s.days.length?s.days.sort().map(d=>`<span class="chip">${DAYS[d]}</span>`).join(''):'<span class="sub">No days assigned</span>'}</div>
-      <div class="sub">${s.items.map(i=>exById(i.exId)).filter(Boolean).map(e=>esc(e.name)).join(', ')||'No exercises'}</div>
-    </div>`).join('') || `<div class="empty">No splits yet. Create one, for example “Push Day”.</div>`);
+  $('#title').textContent = 'Splits'; $('#subtitle').textContent = 'Build workout days, then arrange them into a weekly split';
+  const wn = id => S.workouts.find(w=>w.id===id)?.name;
+  $('#view').innerHTML = `
+  <div class="dayhead" style="margin-top:8px"><h2>1. Workout days</h2><button class="sm" data-new-day>+ New day</button></div>
+  ${S.workouts.map(w => `<div class="card pad">
+      <div class="dayhead"><b>${esc(w.name)}</b><span class="row"><button class="ghost sm" data-edit-day="${w.id}">Edit</button><button class="danger sm" data-del-day="${w.id}">Delete</button></span></div>
+      <div class="sub">${w.items.map(i=>exById(i.exId)).filter(Boolean).map(e=>esc(e.name)).join(', ')||'No exercises'}</div></div>`).join('')
+    || '<div class="empty">No workout days yet. Create one, for example “Push Day”.</div>'}
+  <div class="dayhead" style="margin-top:22px"><h2>2. Splits</h2><button class="sm" data-new-split ${S.workouts.length?'':'disabled'}>+ New split</button></div>
+  ${S.splits.map(s => { const act = activeSplit()?.id===s.id; return `<div class="card pad">
+      <div class="dayhead"><b>${esc(s.name)} ${act?'<span class="chip">Active</span>':''}</b>
+        <span class="row">${act?'':`<button class="ghost sm" data-activate="${s.id}">Make active</button>`}<button class="ghost sm" data-edit-split="${s.id}">Edit</button><button class="danger sm" data-del-split="${s.id}">Delete</button></span></div>
+      <table>${ORDER.map(d=>`<tr><td>${DAYS[d]}</td><td>${esc(wn(s.sched[d])||'Rest')}</td></tr>`).join('')}</table></div>`; }).join('')
+    || `<div class="empty">${S.workouts.length?'No split yet. Place your workout days on the week.':'Create a workout day first.'}</div>`}`;
 }
 
 function libraryView(){
@@ -327,27 +337,25 @@ function exForm(id){
   };
 }
 
-// ---------- split form ----------
-function splitForm(id){
-  const s = id ? JSON.parse(JSON.stringify(S.splits.find(x=>x.id===id))) : {id:uid(), name:'', days:[], items:[]};
+// ---------- workout day form ----------
+function dayForm(id){
+  const s = id ? JSON.parse(JSON.stringify(S.workouts.find(x=>x.id===id))) : {id:uid(), name:'', items:[]};
   const draw = () => {
     dlg.innerHTML = `<form method="dialog">
-      <h2>${id?'Edit split':'New split'}</h2>
-      <label class="f">Split name<input type="text" id="spn" value="${esc(s.name)}" placeholder="Push Day" required></label>
-      <div class="f" style="display:grid;gap:4px">Days<div class="days">${DAYS.map((d,i)=>`<label><input type="checkbox" data-day="${i}" ${s.days.includes(i)?'checked':''}><span>${d}</span></label>`).join('')}</div></div>
-      <div><b>Exercises</b>
+      <h2>${id?'Edit workout day':'New workout day'}</h2>
+      <label class="f">Day name<input type="text" id="spn" value="${esc(s.name)}" placeholder="Push Day" required></label>
+      <div><b>Exercises</b> <span class="sub">(sets × reps)</span>
         ${s.items.map((it,ix)=>{const e=exById(it.exId);return e?`<div class="item"><span class="nm">${esc(e.name)}</span>
           <input type="number" min="1" value="${it.sets}" data-sets="${ix}" aria-label="Sets"> ×
           <input type="number" min="1" value="${it.reps}" data-reps="${ix}" aria-label="Reps">
           <button type="button" class="ghost sm" data-up="${ix}" aria-label="Move up">↑</button>
           <button type="button" class="danger sm" data-rm="${ix}" aria-label="Remove">✕</button></div>`:''}).join('')||'<div class="sub">Nothing added yet.</div>'}
       </div>
-      ${S.library.length?`<div class="row"><select id="pick" class="grow">${S.library.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><button type="button" id="addex" class="ghost">Add</button></div>`:'<div class="sub">Add exercises in the Library first.</div>'}
-      <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok">Save split</button></div>
+      ${S.library.length?`<div class="row"><select id="pick" class="grow">${S.library.map(e=>`<option value="${e.id}">${esc(e.name)}${e.group?' ('+esc(e.group)+')':''}</option>`).join('')}</select><button type="button" id="addex" class="ghost">Add</button></div>`:'<div class="sub">Add exercises in the Library first.</div>'}
+      <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok">Save day</button></div>
     </form>`;
     $('#cancel').onclick = () => dlg.close();
-    dlg.querySelector('#spn').oninput = ev => s.name = ev.target.value;
-    dlg.querySelectorAll('[data-day]').forEach(c => c.onchange = () => { const d=+c.dataset.day; s.days = c.checked ? [...s.days,d] : s.days.filter(x=>x!==d); });
+    $('#spn').oninput = ev => s.name = ev.target.value;
     dlg.querySelectorAll('[data-sets]').forEach(c => c.oninput = () => s.items[c.dataset.sets].sets = +c.value||1);
     dlg.querySelectorAll('[data-reps]').forEach(c => c.oninput = () => s.items[c.dataset.reps].reps = +c.value||1);
     dlg.querySelectorAll('[data-rm]').forEach(c => c.onclick = () => { s.items.splice(+c.dataset.rm,1); draw(); });
@@ -355,12 +363,33 @@ function splitForm(id){
     const add = $('#addex'); if(add) add.onclick = () => { s.items.push({exId:$('#pick').value, sets:3, reps:10}); draw(); };
     dlg.querySelector('form').onsubmit = async ev => {
       if(!s.name.trim()){ev.preventDefault();return;}
-      const i = S.splits.findIndex(x=>x.id===s.id);
-      i>=0 ? S.splits[i]=s : S.splits.push(s);
+      const i = S.workouts.findIndex(x=>x.id===s.id);
+      i>=0 ? S.workouts[i]=s : S.workouts.push(s);
       await save(); render();
     };
   };
   draw(); dlg.showModal();
+}
+
+// ---------- split form: place workout days on the week ----------
+function splitForm(id){
+  const s = id ? JSON.parse(JSON.stringify(S.splits.find(x=>x.id===id))) : {id:uid(), name:'', sched:{}};
+  dlg.innerHTML = `<form method="dialog">
+    <h2>${id?'Edit split':'New split'}</h2>
+    <label class="f">Split name<input type="text" id="spn" value="${esc(s.name)}" placeholder="Push Pull Legs" required></label>
+    ${ORDER.map(d=>`<label class="f">${DFULL[d]}<select data-d="${d}"><option value="">Rest</option>${S.workouts.map(w=>`<option value="${w.id}" ${s.sched[d]===w.id?'selected':''}>${esc(w.name)}</option>`).join('')}</select></label>`).join('')}
+    <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok">Save split</button></div>
+  </form>`;
+  dlg.showModal();
+  $('#cancel').onclick = () => dlg.close();
+  dlg.querySelector('form').onsubmit = async ev => {
+    s.name = $('#spn').value.trim(); if(!s.name){ev.preventDefault();return;}
+    s.sched = {}; dlg.querySelectorAll('[data-d]').forEach(x => { if(x.value) s.sched[x.dataset.d] = x.value; });
+    const i = S.splits.findIndex(x=>x.id===s.id);
+    i>=0 ? S.splits[i]=s : S.splits.push(s);
+    if(!S.active) S.active = s.id;
+    await save(); render();
+  };
 }
 
 // ---------- events ----------
@@ -379,9 +408,13 @@ document.addEventListener('click', async ev => {
       await save(); render();
     }
   }
+  else if('newDay' in d) dayForm();
+  else if(d.editDay) dayForm(d.editDay);
+  else if(d.delDay){ if(confirm('Delete this workout day? It will be removed from your splits.')){ S.workouts = S.workouts.filter(w=>w.id!==d.delDay); S.splits.forEach(sp=>{ for(const k in sp.sched) if(sp.sched[k]===d.delDay) delete sp.sched[k]; }); await save(); render(); } }
+  else if(d.activate){ S.active = d.activate; await save(); render(); }
   else if('newSplit' in d) splitForm();
   else if(d.editSplit) splitForm(d.editSplit);
-  else if(d.delSplit){ if(confirm('Delete this split?')){ S.splits = S.splits.filter(s=>s.id!==d.delSplit); await save(); render(); } }
+  else if(d.delSplit){ if(confirm('Delete this split?')){ S.splits = S.splits.filter(s=>s.id!==d.delSplit); if(S.active===d.delSplit) S.active = S.splits[0]?.id||null; await save(); render(); } }
 });
 // ---------- set logging events ----------
 const rowOf = t => { const el = t.closest('.set'); return rowsFor(el.closest('.exbody').dataset.k)[+el.dataset.i]; };
@@ -417,7 +450,13 @@ $('#install').onclick = async () => { deferred.prompt(); await deferred.userChoi
 if('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
 
 // ---------- start ----------
-(async () => { const s = await kv.get('state'); if(s) S = {library:[],splits:[],logs:{},...s}; render(); })();
+(async () => { const s = await kv.get('state'); if(s) S = {library:[],workouts:[],splits:[],logs:{},active:null,...s};
+  if(S.splits.some(x=>x.items)){   // migrate old splits -> workout days + one weekly split
+    S.workouts = S.splits.map(x=>({id:x.id,name:x.name,items:x.items}));
+    const sched = {}; S.splits.forEach(x=>(x.days||[]).forEach(d=>sched[d]=x.id));
+    S.splits = [{id:uid(),name:'My split',sched}]; S.active = S.splits[0].id; await save();
+  }
+  render(); })();
 </script>
 </body>
 </html>
