@@ -66,6 +66,31 @@ input[type=number]{width:70px}
 .empty{text-align:center;color:var(--mute);padding:36px 10px}
 .empty button{margin-top:12px}
 .dayhead{display:flex;justify-content:space-between;align-items:center}
+
+.set{display:flex;gap:6px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
+.set .n{width:20px;color:var(--mute);font-size:14px}
+.set .x{color:var(--mute);font-size:14px}
+.set input{width:72px;padding:9px 8px}
+.set.on input{border-color:var(--ok)}
+.tog{width:40px;padding:8px 0}
+.tog.ok{background:var(--ok);color:#fff;border:0}
+.chip[hidden]{display:none}
+.prc,.prx{background:#F2B600;color:#1D2733;border-color:#F2B600;font-weight:700;font-size:12px;padding:1px 8px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:10px}
+.tile{border:1px solid var(--line);border-radius:12px;padding:10px;display:grid;gap:2px}
+.tile .big{font-size:24px;font-weight:800;letter-spacing:-.02em}
+.tile small{font-size:13px;font-weight:500;color:var(--mute)}
+.wk{display:flex;gap:6px;align-items:flex-end;height:120px;margin:12px 0}
+.wk .col{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px}
+.wk .col i{display:block;width:100%;background:var(--line);border-radius:6px 6px 0 0}
+.wk .col.today i{background:var(--acc)}
+.wk .col span{font-size:13px;color:var(--mute)}
+.wk .col small{font-size:11px;color:var(--mute);height:13px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 4px;border-top:1px solid var(--line)}
+th{color:var(--mute);font-weight:600;border-top:0}
+.up{color:var(--ok)}.dn{color:var(--bad)}
+button:disabled{opacity:.4;cursor:default}
 #install{display:none}
 .item{display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
 .item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -96,12 +121,11 @@ const kv = {
   async get(k){const d=await idb;return new Promise(r=>{const q=d.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>r(q.result)})},
   async set(k,v){const d=await idb;return new Promise(r=>{const t=d.transaction('kv','readwrite');t.objectStore('kv').put(v,k);t.oncomplete=r})}
 };
-let S = {library:[], splits:[], done:{}};
+let S = {library:[], splits:[], logs:{}};
 const save = () => kv.set('state', S);
 const uid = () => Math.random().toString(36).slice(2,10);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-const dateKey = () => { const d=new Date(); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); };
 const exById = id => S.library.find(e => e.id === id);
 let tab = 'dash';
 const $ = s => document.querySelector(s);
@@ -113,34 +137,138 @@ function render(){
   ({dash:dashboard, splits:splitsView, lib:libraryView})[tab]();
 }
 
+// ---------- logging helpers ----------
+const pad = n => String(n).padStart(2,'0');
+const fmtKey = d => d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+const dateKey = () => fmtKey(new Date());
+const fmt = n => Math.round(n).toLocaleString();
+const e1 = (w,r) => r===1 ? w : w*(1+r/30);
+const okSet = s => s.d && +s.w>0 && +s.r>0;
+const exOf = k => k.split(':')[1];
+let tm; const saveSoon = () => { clearTimeout(tm); tm = setTimeout(save, 300); };
+function rowsFor(k, planned){
+  const dk = dateKey(); S.logs[dk] = S.logs[dk] || {};
+  return S.logs[dk][k] = S.logs[dk][k] || Array.from({length:planned||3}, () => ({w:'',r:'',d:false}));
+}
+function lastSets(exId){
+  const dk = dateKey();
+  for(const d of Object.keys(S.logs).filter(d=>d<dk).sort().reverse())
+    for(const k in S.logs[d]) if(exOf(k)===exId){ const a = S.logs[d][k].filter(okSet); if(a.length) return a; }
+  return [];
+}
+function bests(excl){
+  const m = {};
+  for(const d in S.logs){ if(d===excl) continue;
+    for(const k in S.logs[d]) for(const s of S.logs[d][k]){ if(!okSet(s)) continue;
+      const b = m[exOf(k)] = m[exOf(k)] || {w:0,e:0};
+      b.w = Math.max(b.w,+s.w); b.e = Math.max(b.e, e1(+s.w,+s.r)); } }
+  return m;
+}
+function agg(dates, best){
+  const g = {};
+  dates.forEach(d => { const L = S.logs[d] || {};
+    for(const k in L){ const ex = exById(exOf(k)); if(!ex) continue;
+      const a = g[ex.group||'Other'] = g[ex.group||'Other'] || {vol:0,sets:0,reps:0,ir:0};
+      const ref = best[ex.id]?.e || 0;
+      L[k].filter(okSet).forEach(s => { const w=+s.w, r=+s.r;
+        a.vol += w*r; a.sets++; a.reps += r; if(ref) a.ir += r*w/ref*100; }); } });
+  return g;
+}
+function weekDates(off){
+  const d = new Date(); d.setDate(d.getDate() - (d.getDay()+6)%7 + off*7);
+  return Array.from({length:7}, (_,i) => { const x = new Date(d); x.setDate(d.getDate()+i); return fmtKey(x); });
+}
+function rerender(){
+  const open = [...document.querySelectorAll('details.ex')].map(x=>x.open), y = scrollY;
+  dashboard();
+  document.querySelectorAll('details.ex').forEach((x,i)=>x.open = open[i]);
+  scrollTo(0,y);
+}
+
+// ---------- dashboard ----------
 function dashboard(){
   const d = new Date(), dow = d.getDay(), dk = dateKey();
   $('#title').textContent = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dow];
   $('#subtitle').textContent = d.toLocaleDateString(undefined,{day:'numeric',month:'long',year:'numeric'});
   const splits = S.splits.filter(s => s.days.includes(dow));
+  let html = '';
   if(!splits.length){
-    $('#view').innerHTML = `<div class="empty"><b>No workout planned today.</b><br>${S.splits.length?'Assign a day to one of your splits.':'Add exercises to your library, then build a split.'}<br><button data-go="${S.splits.length?'splits':'lib'}">${S.splits.length?'Open splits':'Open library'}</button></div>`;
-    return;
-  }
-  const done = S.done[dk] || {};
-  $('#view').innerHTML = splits.map(s => {
-    const items = s.items.filter(i => exById(i.exId));
-    const n = items.filter(i => done[s.id+':'+i.exId]).length;
-    return `<section class="card">
-      <div class="pad"><div class="dayhead"><h2>${esc(s.name)}</h2><span class="sub">${n}/${items.length} done</span></div>
-      <div class="bar"><i style="width:${items.length?n/items.length*100:0}%"></i></div></div>
-      ${items.map(i => { const e=exById(i.exId), k=s.id+':'+i.exId, ck=done[k]; return `
-      <details class="ex ${ck?'done':''}">
+    html += `<div class="empty"><b>No workout planned today.</b><br>${S.splits.length?'Assign a day to one of your splits.':'Add exercises to your library, then build a split.'}<br><button data-go="${S.splits.length?'splits':'lib'}">${S.splits.length?'Open splits':'Open library'}</button></div>`;
+  } else {
+    html += `<div id="tsum"></div>`;
+    html += splits.map(s => {
+      const items = s.items.filter(i => exById(i.exId));
+      return `<section class="card"><div class="pad"><h2>${esc(s.name)}</h2></div>
+      ${items.map(i => { const e = exById(i.exId), k = s.id+':'+i.exId, rows = rowsFor(k, i.sets), last = lastSets(e.id);
+        return `<details class="ex">
         <summary>
-          <input class="chk" type="checkbox" data-done="${k}" ${ck?'checked':''} aria-label="Mark ${esc(e.name)} done">
           ${e.img?`<img class="thumb" src="${e.img}" alt="">`:`<span class="thumb">🏋️</span>`}
-          <span class="t"><b>${esc(e.name)}</b><span class="sub">${i.sets} sets × ${i.reps} reps${e.group?' · '+esc(e.group):''}</span></span>
+          <span class="t"><b>${esc(e.name)} <span class="chip prx" hidden>PR</span></b><span class="sub">${i.sets}×${i.reps} planned · <span data-stat></span></span></span>
           <span class="chev">▶</span>
         </summary>
-        ${e.img?`<img class="full" src="${e.img}" alt="${esc(e.name)}">`:`<div class="noimg">No image</div>`}
-      </details>`}).join('') || '<div class="empty">This split has no exercises yet.</div>'}
-    </section>`;
-  }).join('');
+        <div class="exbody" data-k="${k}" data-reps="${i.reps}">
+          ${e.img?`<img class="full" src="${e.img}" alt="${esc(e.name)}">`:''}
+          <div class="pad">
+            <div class="sub">${last.length?'Last: '+last.map(s=>s.w+'×'+s.r).join(', '):'No previous session logged'}</div>
+            <div class="sets">${rows.map((r,n) => { const p = last[n] || last[last.length-1] || {};
+              return `<div class="set ${r.d?'on':''}" data-i="${n}"><span class="n">${n+1}</span>
+              <input type="number" inputmode="decimal" step="any" min="0" data-w value="${esc(r.w)}" placeholder="${p.w??'kg'}" aria-label="Weight set ${n+1}"><span class="x">kg ×</span>
+              <input type="number" inputmode="numeric" min="0" data-r value="${esc(r.r)}" placeholder="${p.r??i.reps}" aria-label="Reps set ${n+1}">
+              <button class="tog ${r.d?'ok':'ghost'}" data-tog aria-label="Mark set ${n+1} done">✓</button><span class="chip prc" hidden>PR</span></div>`; }).join('')}</div>
+            <div class="row" style="margin-top:8px">
+              <button class="ghost sm" data-addset>+ Set</button><button class="ghost sm" data-rmset>− Set</button>
+              <button class="ghost sm" data-repeat ${last.length?'':'disabled'}>Repeat last</button></div>
+            <div class="row" style="margin-top:8px"><span class="sub">Pyramid</span>
+              <input type="number" step="any" data-start placeholder="${last[0]?.w??'start kg'}" aria-label="Start weight">
+              <input type="number" step="any" data-step placeholder="+2.5" aria-label="Weight step per set">
+              <button class="sm" data-pyr>Fill ascending</button></div>
+            <div class="sub" data-detail style="margin-top:8px"></div>
+          </div>
+        </div></details>`; }).join('') || '<div class="empty">This split has no exercises yet.</div>'}
+      </section>`; }).join('');
+  }
+  html += `<div id="wsum"></div>`;
+  $('#view').innerHTML = html;
+  refreshStats();
+}
+
+function refreshStats(){
+  const dk = dateKey(), all = bests(null), prior = bests(dk), dow = new Date().getDay();
+  document.querySelectorAll('.exbody').forEach(card => {
+    const k = card.dataset.k, id = exOf(k), rows = S.logs[dk]?.[k] || [], ref = all[id]?.e || 0, pb = prior[id];
+    let vol=0, n=0, reps=0, ir=0, top=0, anyPR=false;
+    const els = card.querySelectorAll('.set');
+    rows.forEach((s,i) => {
+      const w=+s.w, r=+s.r, ok = okSet(s); let pr = false;
+      if(ok){ vol += w*r; n++; reps += r; if(ref) ir += r*w/ref*100; top = Math.max(top,w);
+        pr = !!pb && (w > pb.w || e1(w,r) > pb.e); }
+      anyPR = anyPR || pr; els[i].querySelector('.prc').hidden = !pr;
+    });
+    const det = card.closest('details');
+    det.querySelector('[data-stat]').textContent = `${n}/${rows.length} sets · ${fmt(vol)} kg`;
+    det.querySelector('.prx').hidden = !anyPR;
+    det.classList.toggle('done', rows.length && n===rows.length);
+    card.querySelector('[data-detail]').textContent = n ? `Volume ${fmt(vol)} kg · Top set ${top} kg · Intensity ${Math.round(ir/reps)}% of best 1RM` : 'Log a set to see volume and intensity.';
+  });
+  // today's muscle groups
+  const t = $('#tsum');
+  if(t){
+    const planned = {};
+    S.splits.filter(s=>s.days.includes(dow)).forEach(s => s.items.forEach(i => { const e = exById(i.exId); if(e) planned[e.group||'Other'] = (planned[e.group||'Other']||0) + i.sets; }));
+    const a = agg([dk], all);
+    const groups = [...new Set([...Object.keys(planned), ...Object.keys(a)])];
+    t.innerHTML = `<section class="card pad"><h2>Today by muscle group</h2><div class="tiles">${groups.map(g => { const x = a[g]||{vol:0,sets:0,reps:0,ir:0};
+      return `<div class="tile"><b>${esc(g)}</b><span class="big">${fmt(x.vol)} <small>kg</small></span><span class="sub">${x.sets}/${planned[g]||x.sets} sets · ${x.reps?Math.round(x.ir/x.reps):0}% int.</span></div>`; }).join('')}</div></section>`;
+  }
+  // whole week
+  const cur = weekDates(0), prev = weekDates(-1), A = agg(cur, all), B = agg(prev, all);
+  const gs = Object.keys(A).concat(Object.keys(B).filter(g=>!A[g])).sort((x,y)=>(A[y]?.vol||0)-(A[x]?.vol||0));
+  const daily = cur.map(d => Object.values(agg([d], all)).reduce((s,x)=>s+x.vol,0)), mx = Math.max(1,...daily);
+  $('#wsum').innerHTML = `<section class="card pad"><h2>This week</h2>
+    <div class="wk">${daily.map((v,i)=>`<div class="col ${cur[i]===dk?'today':''}"><i style="height:${Math.max(3,v/mx*100)}%"></i><span>${['M','T','W','T','F','S','S'][i]}</span><small>${v?fmt(v):''}</small></div>`).join('')}</div>
+    ${gs.length?`<table><tr><th>Muscle</th><th>Volume</th><th>Sets</th><th>Int.</th><th>vs last wk</th></tr>${gs.map(g => { const x = A[g]||{vol:0,sets:0,reps:0,ir:0}, p = B[g]?.vol||0, dl = p ? Math.round((x.vol-p)/p*100) : null;
+      return `<tr><td>${esc(g)}</td><td>${fmt(x.vol)} kg</td><td>${x.sets}</td><td>${x.reps?Math.round(x.ir/x.reps):0}%</td><td class="${dl>0?'up':dl<0?'dn':''}">${dl===null?'–':(dl>0?'+':'')+dl+'%'}</td></tr>`; }).join('')}</table>`:'<div class="sub">Log sets to build your weekly totals.</div>'}
+    <div class="sub" style="margin-top:6px">Volume = weight × reps. Intensity = weight as % of your best estimated 1RM for that exercise.</div></section>`;
 }
 
 function splitsView(){
@@ -182,7 +310,7 @@ function exForm(id){
   dlg.innerHTML = `<form method="dialog">
     <h2>${id?'Edit exercise':'New exercise'}</h2>
     <label class="f">Exercise name<input type="text" id="exn" value="${esc(e.name)}" required></label>
-    <label class="f">Muscle group (optional)<input type="text" id="exg" value="${esc(e.group)}" placeholder="Chest, Legs, Back…"></label>
+    <label class="f">Muscle group (used for volume totals)<input type="text" id="exg" list="groups" value="${esc(e.group)}" placeholder="Chest, Back, Quads…"></label><datalist id="groups">${["Chest","Back","Shoulders","Biceps","Triceps","Quads","Hamstrings","Glutes","Calves","Core","Forearms"].map(g=>`<option>${g}</option>`).join("")}</datalist>
     <label class="f">Image<input type="file" id="exi" accept="image/*"></label>
     <img id="exp" class="full" style="border-radius:10px;${e.img?'':'display:none'}" ${e.img?`src="${e.img}"`:''} alt="Preview">
     <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok" id="okb">Save exercise</button></div>
@@ -255,14 +383,31 @@ document.addEventListener('click', async ev => {
   else if(d.editSplit) splitForm(d.editSplit);
   else if(d.delSplit){ if(confirm('Delete this split?')){ S.splits = S.splits.filter(s=>s.id!==d.delSplit); await save(); render(); } }
 });
-// checkbox inside <summary>: remember open panels, then restore after re-render
-let prevOpen = [];
-document.addEventListener('click', ev => { if(ev.target.matches('input[data-done]')) prevOpen = [...document.querySelectorAll('details.ex')].map(x=>x.open); }, true);
-document.addEventListener('change', async ev => {
-  const t = ev.target; if(!t.matches('input[data-done]')) return;
-  const dk = dateKey(); S.done[dk] = S.done[dk] || {}; S.done[dk][t.dataset.done] = t.checked;
-  await save(); render();
-  document.querySelectorAll('details.ex').forEach((x,i)=>x.open = prevOpen[i] || false);
+// ---------- set logging events ----------
+const rowOf = t => { const el = t.closest('.set'); return rowsFor(el.closest('.exbody').dataset.k)[+el.dataset.i]; };
+document.addEventListener('input', ev => {
+  const t = ev.target; if(!t.closest('.set') || !t.matches('[data-w],[data-r]')) return;
+  rowOf(t)[t.matches('[data-w]') ? 'w' : 'r'] = t.value; saveSoon(); refreshStats();
+});
+document.addEventListener('click', ev => {
+  const t = ev.target.closest('button'); if(!t) return;
+  const card = t.closest('.exbody'), d = t.dataset; if(!card) return;
+  const k = card.dataset.k, dk = dateKey(), rows = rowsFor(k), last = lastSets(exOf(k));
+  if('tog' in d){
+    const r = rowOf(t), i = +t.closest('.set').dataset.i, p = last[i] || last[last.length-1];
+    r.d = !r.d;
+    if(r.d && p){ if(r.w==='') r.w = p.w; if(r.r==='') r.r = p.r; }   // done with no entry = repeat previous
+  }
+  else if('addset' in d) rows.push({w:'',r:'',d:false});
+  else if('rmset' in d){ if(rows.length>1) rows.pop(); }
+  else if('repeat' in d) S.logs[dk][k] = last.map(s => ({w:s.w, r:s.r, d:false}));
+  else if('pyr' in d){
+    const st = card.querySelector('[data-start]'), sp = card.querySelector('[data-step]');
+    const start = +st.value || +last[0]?.w, step = sp.value===''?2.5:+sp.value;
+    if(!start){ alert('Enter a starting weight.'); return; }
+    rows.forEach((r,i) => { r.w = +(start+step*i).toFixed(2); r.r = card.dataset.reps; r.d = false; });
+  } else return;
+  saveSoon(); rerender();
 });
 
 // ---------- install + service worker ----------
@@ -272,7 +417,7 @@ $('#install').onclick = async () => { deferred.prompt(); await deferred.userChoi
 if('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
 
 // ---------- start ----------
-(async () => { const s = await kv.get('state'); if(s) S = {library:[],splits:[],done:{},...s}; render(); })();
+(async () => { const s = await kv.get('state'); if(s) S = {library:[],splits:[],logs:{},...s}; render(); })();
 </script>
 </body>
 </html>
