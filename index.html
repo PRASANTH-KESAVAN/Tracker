@@ -91,6 +91,14 @@ th,td{text-align:left;padding:7px 4px;border-top:1px solid var(--line)}
 th{color:var(--mute);font-weight:600;border-top:0}
 .up{color:var(--ok)}.dn{color:var(--bad)}
 button:disabled{opacity:.4;cursor:default}
+.days label{position:relative}
+.cfg{margin:6px 0;display:grid;gap:4px}
+.cfg select{width:auto;max-width:100%;padding:6px}
+.cfg input[type=number]{width:60px;padding:4px}
+.tot{color:var(--mute);font-size:12px;margin-left:auto;white-space:nowrap}
+.set{flex-wrap:wrap}.set input{width:64px}
+.form2{display:grid;gap:10px;margin:10px 0}
+[hidden]{display:none!important}
 #install{display:none}
 .item{display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
 .item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -106,6 +114,7 @@ button:disabled{opacity:.4;cursor:default}
   <button data-tab="dash">Dashboard</button>
   <button data-tab="splits">Splits</button>
   <button data-tab="lib">Library</button>
+  <button data-tab="more">More</button>
 </nav>
 <dialog id="dlg"></dialog>
 
@@ -121,8 +130,10 @@ const kv = {
   async get(k){const d=await idb;return new Promise(r=>{const q=d.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>r(q.result)})},
   async set(k,v){const d=await idb;return new Promise(r=>{const t=d.transaction('kv','readwrite');t.objectStore('kv').put(v,k);t.oncomplete=r})}
 };
-let S = {library:[], workouts:[], splits:[], logs:{}, active:null};
-const save = () => kv.set('state', S);
+let S = {library:[], workouts:[], splits:[], logs:{}, active:null, gyms:[{id:'g1',name:'My gym',cable:5,machine:5}], gym:'g1', bw:70, seeded:false};
+let lastBk = '';
+const save = async () => { await kv.set('state', S); const k = 'backup_'+new Date().getDay(), dk = new Date().toDateString();
+  if(lastBk !== dk){ lastBk = dk; await kv.set(k, S); } };
 const uid = () => Math.random().toString(36).slice(2,10);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -134,7 +145,7 @@ const dlg = $('#dlg');
 // ---------- views ----------
 function render(){
   document.querySelectorAll('nav button').forEach(b => b.dataset.tab===tab ? b.setAttribute('aria-current','page') : b.removeAttribute('aria-current'));
-  ({dash:dashboard, splits:splitsView, lib:libraryView})[tab]();
+  ({dash:dashboard, splits:splitsView, lib:libraryView, more:settingsView})[tab]();
 }
 
 // ---------- logging helpers ----------
@@ -143,7 +154,8 @@ const fmtKey = d => d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())
 const dateKey = () => fmtKey(new Date());
 const fmt = n => Math.round(n).toLocaleString();
 const e1 = (w,r) => r===1 ? w : w*(1+r/30);
-const okSet = s => s.d && +s.w>0 && +s.r>0;
+const kgOf = s => s.kg ?? (+s.w||0), mOf = s => s.m ?? 1;
+const okSet = s => s.d && +s.r>0 && kgOf(s)>0;
 const exOf = k => k.split(':')[1];
 let tm; const saveSoon = () => { clearTimeout(tm); tm = setTimeout(save, 300); };
 function rowsFor(k, planned){
@@ -161,7 +173,7 @@ function bests(excl){
   for(const d in S.logs){ if(d===excl) continue;
     for(const k in S.logs[d]) for(const s of S.logs[d][k]){ if(!okSet(s)) continue;
       const b = m[exOf(k)] = m[exOf(k)] || {w:0,e:0};
-      b.w = Math.max(b.w,+s.w); b.e = Math.max(b.e, e1(+s.w,+s.r)); } }
+      b.w = Math.max(b.w,kgOf(s)); b.e = Math.max(b.e, e1(kgOf(s),+s.r)); } }
   return m;
 }
 function agg(dates, best){
@@ -170,8 +182,8 @@ function agg(dates, best){
     for(const k in L){ const ex = exById(exOf(k)); if(!ex) continue;
       const a = g[ex.group||'Other'] = g[ex.group||'Other'] || {vol:0,sets:0,reps:0,ir:0};
       const ref = best[ex.id]?.e || 0;
-      L[k].filter(okSet).forEach(s => { const w=+s.w, r=+s.r;
-        a.vol += w*r; a.sets++; a.reps += r; if(ref) a.ir += r*w/ref*100; }); } });
+      L[k].filter(okSet).forEach(s => { const w=kgOf(s), r=+s.r;
+        a.vol += w*r*mOf(s); a.sets++; a.reps += r; if(ref) a.ir += r*w/ref*100; }); } });
   return g;
 }
 function weekDates(off){
@@ -195,7 +207,7 @@ function dashboard(){
   if(!splits.length){
     html += `<div class="empty"><b>Rest day.</b><br>${S.splits.length?'Nothing is scheduled today in your active split.':S.library.length?'Create workout days, then arrange them into a split.':'Add exercises to your library first.'}<br><button data-go="${S.library.length?'splits':'lib'}">${S.library.length?'Open splits':'Open library'}</button></div>`;
   } else {
-    html += `<div id="tsum"></div>`;
+    html += `<div class="card pad row"><label class="sub" for="gsel">Gym</label><select id="gsel" class="grow" data-gym>${S.gyms.map(x=>`<option value="${x.id}" ${x.id===S.gym?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div><div id="tsum"></div>`;
     html += splits.map(s => {
       const items = s.items.filter(i => exById(i.exId));
       return `<section class="card"><div class="pad"><h2>${esc(s.name)}</h2></div>
@@ -206,15 +218,15 @@ function dashboard(){
           <span class="t"><b>${esc(e.name)} <span class="chip prx" hidden>PR</span></b><span class="sub">${i.sets}×${i.reps} planned · <span data-stat></span></span></span>
           <span class="chev">▶</span>
         </summary>
-        <div class="exbody" data-k="${k}" data-reps="${i.reps}">
+        <div class="exbody" data-k="${k}" data-reps="${esc(i.reps)}">
           ${e.img?`<img class="full" src="${e.img}" alt="${esc(e.name)}">`:''}
           <div class="pad">
             <div class="sub">${last.length?'Last: '+last.map(s=>s.w+'×'+s.r).join(', '):'No previous session logged'}</div>
-            <div class="sets">${rows.map((r,n) => { const p = last[n] || last[last.length-1] || {};
+            ${cfgHtml(e)}<div class="sets">${rows.map((r,n) => { const p = last[n] || last[last.length-1] || {};
               return `<div class="set ${r.d?'on':''}" data-i="${n}"><span class="n">${n+1}</span>
-              <input type="number" inputmode="decimal" step="any" min="0" data-w value="${esc(r.w)}" placeholder="${p.w??'kg'}" aria-label="Weight set ${n+1}"><span class="x">kg ×</span>
+              <input type="number" inputmode="decimal" step="any" min="0" data-w value="${esc(r.w)}" placeholder="${p.w??'kg'}" aria-label="Weight set ${n+1}"><span class="x">${unit(e)} ×</span>
               <input type="number" inputmode="numeric" min="0" data-r value="${esc(r.r)}" placeholder="${p.r??i.reps}" aria-label="Reps set ${n+1}">
-              <button class="tog ${r.d?'ok':'ghost'}" data-tog aria-label="Mark set ${n+1} done">✓</button><span class="chip prc" hidden>PR</span></div>`; }).join('')}</div>
+              <button class="tog ${r.d?'ok':'ghost'}" data-tog aria-label="Mark set ${n+1} done">✓</button><span class="chip prc" hidden>PR</span><span class="tot"></span></div>`; }).join('')}</div>
             <div class="row" style="margin-top:8px">
               <button class="ghost sm" data-addset>+ Set</button><button class="ghost sm" data-rmset>− Set</button>
               <button class="ghost sm" data-repeat ${last.length?'':'disabled'}>Repeat last</button></div>
@@ -239,10 +251,12 @@ function refreshStats(){
     let vol=0, n=0, reps=0, ir=0, top=0, anyPR=false;
     const els = card.querySelectorAll('.set');
     rows.forEach((s,i) => {
-      const w=+s.w, r=+s.r, ok = okSet(s); let pr = false;
-      if(ok){ vol += w*r; n++; reps += r; if(ref) ir += r*w/ref*100; top = Math.max(top,w);
+      const w=kgOf(s), r=+s.r, ok = okSet(s); let pr = false;
+      if(ok){ vol += w*r*mOf(s); n++; reps += r; if(ref) ir += r*w/ref*100; top = Math.max(top,w);
         pr = !!pb && (w > pb.w || e1(w,r) > pb.e); }
       anyPR = anyPR || pr; els[i].querySelector('.prc').hidden = !pr;
+      const rk = s.d ? {kg:kgOf(s),m:mOf(s)} : resolve(exById(id), s.w);
+      els[i].querySelector('.tot').textContent = rk.kg ? '= '+(+rk.kg.toFixed(2))+' kg'+(rk.m>1?' /side':'') : '';
     });
     const det = card.closest('details');
     det.querySelector('[data-stat]').textContent = `${n}/${rows.length} sets · ${fmt(vol)} kg`;
@@ -271,35 +285,168 @@ function refreshStats(){
     <div class="sub" style="margin-top:6px">Volume = weight × reps. Intensity = weight as % of your best estimated 1RM for that exercise.</div></section>`;
 }
 
-const DFULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'], ORDER = [1,2,3,4,5,6,0];
-const activeSplit = () => S.splits.find(x=>x.id===S.active) || S.splits[0];
-const todayWorkouts = dow => { const sp = activeSplit(), w = sp && S.workouts.find(x=>x.id===sp.sched[dow]); return w ? [w] : []; };
-
-function splitsView(){
-  $('#title').textContent = 'Splits'; $('#subtitle').textContent = 'Build workout days, then arrange them into a weekly split';
-  const wn = id => S.workouts.find(w=>w.id===id)?.name;
-  $('#view').innerHTML = `
-  <div class="dayhead" style="margin-top:8px"><h2>1. Workout days</h2><button class="sm" data-new-day>+ New day</button></div>
-  ${S.workouts.map(w => `<div class="card pad">
-      <div class="dayhead"><b>${esc(w.name)}</b><span class="row"><button class="ghost sm" data-edit-day="${w.id}">Edit</button><button class="danger sm" data-del-day="${w.id}">Delete</button></span></div>
-      <div class="sub">${w.items.map(i=>exById(i.exId)).filter(Boolean).map(e=>esc(e.name)).join(', ')||'No exercises'}</div></div>`).join('')
-    || '<div class="empty">No workout days yet. Create one, for example “Push Day”.</div>'}
-  <div class="dayhead" style="margin-top:22px"><h2>2. Splits</h2><button class="sm" data-new-split ${S.workouts.length?'':'disabled'}>+ New split</button></div>
-  ${S.splits.map(s => { const act = activeSplit()?.id===s.id; return `<div class="card pad">
-      <div class="dayhead"><b>${esc(s.name)} ${act?'<span class="chip">Active</span>':''}</b>
-        <span class="row">${act?'':`<button class="ghost sm" data-activate="${s.id}">Make active</button>`}<button class="ghost sm" data-edit-split="${s.id}">Edit</button><button class="danger sm" data-del-split="${s.id}">Delete</button></span></div>
-      <table>${ORDER.map(d=>`<tr><td>${DAYS[d]}</td><td>${esc(wn(s.sched[d])||'Rest')}</td></tr>`).join('')}</table></div>`; }).join('')
-    || `<div class="empty">${S.workouts.length?'No split yet. Place your workout days on the week.':'Create a workout day first.'}</div>`}`;
+// ---------- presets & weight-entry rules ----------
+const PRIMARY = ['Chest','Lats','Upper Back','Lower Back','Front Delts','Side Delts','Rear Delts','Traps','Biceps','Triceps','Forearms','Quads','Hamstrings','Glutes','Calves','Abs','Obliques','Adductors','Abductors','Hip Flexors','Neck'];
+const MICRO = {
+  Chest:['Upper Chest','Mid Chest','Lower Chest','Serratus Anterior','Pec Minor'],
+  Shoulders:['Front Delts','Side Delts','Rear Delts','Rotator Cuff'],
+  Back:['Lats','Teres Major','Rhomboids','Upper Traps','Mid Traps','Lower Traps','Erector Spinae','Quadratus Lumborum'],
+  Arms:['Biceps Long Head','Biceps Short Head','Brachialis','Brachioradialis','Triceps Long Head','Triceps Lateral Head','Triceps Medial Head','Forearm Flexors','Forearm Extensors'],
+  Core:['Rectus Abdominis','Obliques','Transverse Abdominis','Hip Flexors'],
+  Legs:['Rectus Femoris','Vastus Lateralis','Vastus Medialis','Hamstrings','Glute Max','Glute Med/Min','Adductors','Abductors','Gastrocnemius','Soleus','Tibialis Anterior'],
+  Neck:['Neck Flexors','Neck Extensors']
+};
+const ALLMICRO = Object.values(MICRO).flat();
+const EQUIP = {barbell:'Barbell',dumbbell:'Dumbbell',cable:'Cable stack',machine:'Machine',bodyweight:'Bodyweight',other:'Other'};
+const ENTRY = {side:'One side plates (bar added)',plates:'Both sides plates (bar added)',total:'Total including bar',kg:'Weight in kg',block:'Stack block number'};
+const entryOpts = q => ({barbell:['side','plates','total'],cable:['kg','block'],machine:['kg','block']}[q]||[]);
+const gymNow = () => S.gyms.find(g=>g.id===S.gym) || S.gyms[0];
+const exCfg = e => { const equip = e.equip||'other'; return {equip, entry:e.entry||entryOpts(equip)[0]||'kg', bar:e.bar??20, uni:!!e.uni}; };
+function resolve(e, w){           // entered value -> {kg: load per rep, m: volume multiplier}
+  w = +w||0; const c = exCfg(e), g = gymNow(); let kg = w;
+  if(c.equip==='barbell') kg = w<=0 ? 0 : c.entry==='side' ? c.bar+2*w : c.entry==='plates' ? c.bar+w : w;
+  else if(c.equip==='dumbbell') kg = c.uni ? w : 2*w;
+  else if(c.equip==='cable'||c.equip==='machine') kg = c.entry==='block' ? w*(+g[c.equip]||1) : w;
+  else if(c.equip==='bodyweight') kg = (+S.bw||0) + w;
+  return {kg, m:c.uni?2:1};
+}
+const unit = e => exCfg(e).entry==='block' ? 'blk' : 'kg';
+function hint(q, entry, uni){
+  if(q==='barbell') return {side:'Enter plates on ONE side. Total = bar + 2 × entry.',plates:'Enter plates on BOTH sides added together. Total = bar + entry.',total:'Enter the full weight including the bar.'}[entry];
+  if(q==='dumbbell') return uni ? 'Enter the one dumbbell you hold. Volume counts both sides.' : 'Enter ONE dumbbell’s weight. Total = 2 × entry.';
+  if(q==='cable'||q==='machine') return (entry==='block' ? 'Enter the stack block number. kg = block × your gym’s block weight (More → Gym).' : 'Enter the weight in kg.') + (uni?' Volume counts both sides.':'');
+  if(q==='bodyweight') return 'Enter added weight (0 for bodyweight only). Your body weight from More is included.';
+  return 'Enter the weight in kg.';
+}
+function cfgHtml(e){
+  const c = exCfg(e), o = entryOpts(c.equip);
+  return `<div class="cfg"><div class="row"><span class="chip">${EQUIP[c.equip]}</span>
+    ${o.length?`<select data-cfg="entry" aria-label="How you enter weight">${o.map(k=>`<option value="${k}" ${k===c.entry?'selected':''}>${ENTRY[k]}</option>`).join('')}</select>`:''}
+    ${c.equip==='barbell'?`<label class="sub">Bar <input type="number" step="any" data-cfg="bar" value="${c.bar}"> kg</label>`:''}
+    ${c.equip!=='barbell'&&c.equip!=='bodyweight'?`<label class="sub"><input type="checkbox" data-cfg="uni" ${c.uni?'checked':''}> Unilateral</label>`:''}</div>
+    <div class="sub">${hint(c.equip,c.entry,c.uni)}</div></div>`;
 }
 
+const SEED_EX = `Incline Dumbbell Press|Chest|Upper Chest,Front Delts,Triceps Lateral Head|D
+Barbell Bench Press|Chest|Mid Chest,Front Delts,Triceps Lateral Head,Triceps Medial Head|B
+Decline Barbell Press|Chest|Lower Chest,Front Delts,Triceps Lateral Head|B
+Pec Deck Fly|Chest|Mid Chest,Front Delts|M
+Cable Lateral Raise|Side Delts|Upper Traps|C|1
+Cable Triceps Pushdown|Triceps|Triceps Lateral Head,Triceps Medial Head|C
+Overhead Cable Triceps Extension|Triceps|Triceps Long Head|C
+Chest-Supported Dumbbell Row|Upper Back|Lats,Rhomboids,Rear Delts,Biceps Short Head|D
+Lat Pulldown (front)|Lats|Teres Major,Biceps Long Head,Brachialis,Lower Traps|C
+Close-Grip Cable Row|Upper Back|Lats,Rhomboids,Rear Delts,Biceps Short Head|C
+Face Pull|Rear Delts|Rotator Cuff,Mid Traps,Rhomboids|C
+Incline Dumbbell Curl|Biceps|Biceps Long Head,Brachialis|D
+EZ-Bar Curl (close grip)|Biceps|Biceps Short Head,Brachialis,Forearm Flexors|B
+Hammer Curl|Biceps|Brachialis,Brachioradialis|D
+Forearm / Wrist Extension|Forearms|Forearm Extensors,Brachioradialis|D
+Barbell Back Squat|Quads|Glute Max,Adductors,Erector Spinae,Rectus Abdominis|B
+Romanian Deadlift|Hamstrings|Glute Max,Erector Spinae,Forearm Flexors,Lats|B
+Leg Press|Quads|Glute Max,Adductors,Vastus Medialis|M
+Leg Extension|Quads|Rectus Femoris,Vastus Lateralis,Vastus Medialis|M
+Lying Leg Curl|Hamstrings|Gastrocnemius|M
+Calf Raises (standing or seated)|Calves|Soleus|M
+Single-Arm Overhead Cable Extension|Triceps|Triceps Long Head|C|1
+Single-Arm Cable Pushdown|Triceps|Triceps Lateral Head,Triceps Medial Head|C|1
+Incline DB Curl or Bayesian Cable Curl|Biceps|Biceps Long Head,Brachialis|C|1
+DB Preacher / Concentration Curl|Biceps|Biceps Short Head,Brachialis|D|1
+Cable Rope Hammer Curl|Biceps|Brachialis,Brachioradialis|C
+Dumbbell Shoulder Press|Front Delts|Side Delts,Triceps Lateral Head,Triceps Medial Head,Upper Traps|D
+Reverse Pec Deck|Rear Delts|Rhomboids,Mid Traps,Rotator Cuff|M
+Dumbbell / Barbell Shrugs|Traps|Forearm Flexors|D
+Hanging / Lying Leg Raises|Abs|Hip Flexors,Obliques|W
+Cable Crunch|Abs|Obliques|C
+Pull-Up|Lats|Biceps Long Head,Brachialis,Teres Major,Lower Traps|W
+Chin-Up|Lats|Biceps Short Head,Brachialis,Teres Major|W
+Barbell Row|Upper Back|Lats,Rear Delts,Biceps Short Head,Erector Spinae|B
+Single-Arm Dumbbell Row|Lats|Rhomboids,Rear Delts,Biceps Short Head|D|1
+T-Bar Row|Upper Back|Lats,Rear Delts,Erector Spinae|B
+Seated Cable Row (wide)|Upper Back|Rear Delts,Mid Traps,Lats|C
+Straight-Arm Pulldown|Lats|Teres Major,Triceps Long Head|C
+Deadlift|Hamstrings|Glute Max,Erector Spinae,Upper Traps,Forearm Flexors,Lats|B
+Dumbbell Bench Press|Chest|Mid Chest,Front Delts,Triceps Lateral Head|D
+Incline Barbell Press|Chest|Upper Chest,Front Delts,Triceps Lateral Head|B
+Cable Fly|Chest|Mid Chest,Front Delts|C
+Push-Up|Chest|Front Delts,Triceps Lateral Head,Serratus Anterior|W
+Chest Dips|Chest|Lower Chest,Triceps Lateral Head,Front Delts|W
+Overhead Press (barbell)|Front Delts|Side Delts,Triceps Lateral Head,Upper Traps|B
+Dumbbell Lateral Raise|Side Delts|Upper Traps|D
+Arnold Press|Front Delts|Side Delts,Triceps Lateral Head|D
+Barbell Curl|Biceps|Biceps Short Head,Brachialis,Forearm Flexors|B
+Preacher Curl Machine|Biceps|Biceps Short Head,Brachialis|M
+Skull Crusher|Triceps|Triceps Long Head,Triceps Medial Head|B
+Triceps Dips|Triceps|Triceps Lateral Head,Lower Chest,Front Delts|W
+Hack Squat|Quads|Glute Max,Vastus Lateralis|M
+Bulgarian Split Squat|Quads|Glute Max,Adductors|D|1
+Walking Lunge|Quads|Glute Max,Hamstrings|D|1
+Hip Thrust|Glutes|Hamstrings,Adductors|B
+Seated Leg Curl|Hamstrings|Gastrocnemius|M
+Hip Abduction Machine|Abductors|Glute Med/Min|M
+Hip Adduction Machine|Adductors||M
+Standing Calf Raise|Calves|Soleus|M
+Seated Calf Raise|Calves|Soleus|M
+Back Extension|Lower Back|Glute Max,Hamstrings,Erector Spinae|W
+Plank|Abs|Transverse Abdominis,Obliques|W
+Russian Twist|Obliques|Rectus Abdominis|W
+Wrist Curl|Forearms|Forearm Flexors|D
+Reverse Curl|Forearms|Brachioradialis,Brachialis|B
+Neck Extension|Neck|Neck Extensors|O`;
+const SEED_DAYS = `Chest + Triceps A|Incline Dumbbell Press@8–12;Barbell Bench Press@6–10;Pec Deck Fly@10–15;Cable Lateral Raise@12–20;Cable Triceps Pushdown@10–15;Overhead Cable Triceps Extension@10–15
+Back + Biceps A|Chest-Supported Dumbbell Row@8–12;Lat Pulldown (front)@8–12;Close-Grip Cable Row@8–12;Face Pull@12–20;Incline Dumbbell Curl@8–12;EZ-Bar Curl (close grip)@8–12;Hammer Curl@10–15;Forearm / Wrist Extension@12–20
+Legs|Barbell Back Squat@6–10;Romanian Deadlift@8–12;Leg Press@8–12;Leg Extension@10–15;Lying Leg Curl@10–15;Calf Raises (standing or seated)@10–15
+Chest + Triceps B|Incline Dumbbell Press@8–12;Barbell Bench Press@6–10;Decline Barbell Press@8–12;Pec Deck Fly@10–15;Single-Arm Overhead Cable Extension@10–15;Single-Arm Cable Pushdown@10–15
+Back + Biceps B|Chest-Supported Dumbbell Row@8–12;Lat Pulldown (front)@8–12;Close-Grip Cable Row@8–12;Face Pull@12–20;Incline DB Curl or Bayesian Cable Curl@8–12;DB Preacher / Concentration Curl@10–15;Cable Rope Hammer Curl@10–15
+Shoulders + Abs|Dumbbell Shoulder Press@8–12;Cable Lateral Raise@12–20;Reverse Pec Deck@12–20;Dumbbell / Barbell Shrugs@10–15;Hanging / Lying Leg Raises@10–15;Cable Crunch@12–15`;
+const PLAN = '6-Day Chest / Back / Legs';
+function seed(){     // additive only: never overwrites or removes anything
+  const find = n => S.library.find(e=>e.name.toLowerCase()===n.toLowerCase());
+  const EQ = {B:'barbell',D:'dumbbell',C:'cable',M:'machine',W:'bodyweight',O:'other'};
+  SEED_EX.split('\n').forEach(l => { const [name,group,sec,q,u] = l.split('|'); if(find(name)) return;
+    const equip = EQ[q||'O']; S.library.push({id:uid(),name,group,secondary:sec?sec.split(','):[],img:'',equip,uni:u==='1',entry:entryOpts(equip)[0]||'kg',bar:/EZ/.test(name)?10:20}); });
+  const ids = [];
+  SEED_DAYS.split('\n').forEach(l => { const [name,list] = l.split('|'); let w = S.workouts.find(x=>x.name===name);
+    if(!w){ w = {id:uid(),name,items:list.split(';').map(t=>{const [n,r]=t.split('@'); return {exId:find(n).id,sets:3,reps:r};})}; S.workouts.push(w); }
+    ids.push(w.id); });
+  if(!S.splits.some(x=>x.name===PLAN)){
+    const sp = {id:uid(),name:PLAN,sched:{1:ids[0],2:ids[1],3:ids[2],4:ids[3],5:ids[4],6:ids[5]}};
+    S.splits.push(sp); if(!S.active) S.active = sp.id; }
+}
+
+// ---------- more / settings ----------
+function settingsView(){
+  $('#title').textContent = 'More'; $('#subtitle').textContent = 'Gym, backup and data safety';
+  const g = gymNow();
+  $('#view').innerHTML = `
+  <section class="card pad form2"><h2>Gym</h2>
+    <label class="f">Active gym<select data-gym>${S.gyms.map(x=>`<option value="${x.id}" ${x.id===g.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="f">Gym name<input type="text" data-gset="name" value="${esc(g.name)}"></label>
+    <div class="row"><label class="f grow">Cable stack: 1 block = kg<input type="number" step="any" data-gset="cable" value="${g.cable}"></label>
+    <label class="f grow">Machine stack: 1 block = kg<input type="number" step="any" data-gset="machine" value="${g.machine}"></label></div>
+    <button class="ghost" data-add-gym>+ Add another gym</button>
+    <div class="sub">The kg value is saved with each logged set, so switching gyms never changes old history.</div></section>
+  <section class="card pad form2"><h2>Body weight</h2>
+    <label class="f">Used for bodyweight exercises (kg)<input type="number" step="any" data-bw value="${S.bw}"></label></section>
+  <section class="card pad form2"><h2>Your data</h2>
+    <div class="sub" id="persist">Everything is stored only on this device. Nothing is deleted: removing an exercise, day or split archives it. A rolling daily backup is also kept inside the app.</div>
+    <button data-export>Export backup (JSON)</button>
+    <label class="f">Import backup<input type="file" accept=".json,application/json" data-import></label>
+    <button class="ghost" data-seed>Load 6-day Chest / Back / Legs plan and exercise presets</button></section>`;
+  navigator.storage?.persisted?.().then(p => { const el = $('#persist'); if(el) el.textContent += p ? ' Storage is marked persistent.' : ' Tip: install the app so the browser keeps your data.'; });
+}
+
+// ---------- library ----------
 function libraryView(){
-  $('#title').textContent = 'Library'; $('#subtitle').textContent = 'Every exercise you can use in a split';
-  $('#view').innerHTML = `<button data-new-ex>+ New exercise</button><div style="height:12px"></div>` + (S.library.length ? `<div class="grid">${S.library.map(e => `
-    <div class="card">
-      ${e.img?`<img src="${e.img}" alt="${esc(e.name)}">`:`<div class="noimg">🏋️</div>`}
-      <div class="pad"><b>${esc(e.name)}</b><div class="sub">${esc(e.group||'')}</div>
-      <div class="row" style="margin-top:8px"><button class="ghost sm" data-edit-ex="${e.id}">Edit</button><button class="danger sm" data-del-ex="${e.id}">Delete</button></div></div>
-    </div>`).join('')}</div>` : `<div class="empty">Your library is empty. Add your first exercise with a photo.</div>`);
+  $('#title').textContent = 'Library'; $('#subtitle').textContent = 'Exercises, muscles and how you enter weight';
+  const live = S.library.filter(e=>!e.arch), old = S.library.filter(e=>e.arch);
+  const card = (e,a) => `<div class="card">${e.img?`<img src="${e.img}" alt="${esc(e.name)}">`:`<div class="noimg">🏋️</div>`}
+    <div class="pad"><b>${esc(e.name)}</b><div class="sub">${esc(e.group||'')} · ${EQUIP[e.equip||'other']}${e.uni?' · unilateral':''}</div>
+    ${e.secondary?.length?`<div class="sub">+ ${esc(e.secondary.join(', '))}</div>`:''}
+    <div class="row" style="margin-top:8px">${a?`<button class="sm" data-restore-ex="${e.id}">Restore</button>`:`<button class="ghost sm" data-edit-ex="${e.id}">Edit</button><button class="danger sm" data-arch-ex="${e.id}">Archive</button>`}</div></div></div>`;
+  $('#view').innerHTML = `<div class="row"><button data-new-ex>+ New exercise</button><input type="text" id="q" class="grow" placeholder="Search exercises or muscles" aria-label="Search"></div><div style="height:12px"></div>`
+    + (live.length ? `<div class="grid">${live.map(e=>card(e)).join('')}</div>` : '<div class="empty">Your library is empty.</div>')
+    + (old.length ? `<details style="margin-top:16px"><summary class="sub">Archived (${old.length})</summary><div class="grid">${old.map(e=>card(e,1)).join('')}</div></details>` : '');
 }
 
 // ---------- exercise form ----------
@@ -316,25 +463,73 @@ function resize(file){
   });
 }
 function exForm(id){
-  const e = id ? {...exById(id)} : {id:uid(), name:'', group:'', img:''};
+  const e = id ? {...exById(id)} : {id:uid(), name:'', group:'Chest', secondary:[], img:'', equip:'barbell', entry:'side', bar:20, uni:false};
+  const sec = e.secondary || [], custom = e.group && !PRIMARY.includes(e.group), cs = sec.filter(m=>!ALLMICRO.includes(m)).join(', ');
   dlg.innerHTML = `<form method="dialog">
     <h2>${id?'Edit exercise':'New exercise'}</h2>
     <label class="f">Exercise name<input type="text" id="exn" value="${esc(e.name)}" required></label>
-    <label class="f">Muscle group (used for volume totals)<input type="text" id="exg" list="groups" value="${esc(e.group)}" placeholder="Chest, Back, Quads…"></label><datalist id="groups">${["Chest","Back","Shoulders","Biceps","Triceps","Quads","Hamstrings","Glutes","Calves","Core","Forearms"].map(g=>`<option>${g}</option>`).join("")}</datalist>
+    <label class="f">Primary muscle (volume is counted here)<select id="exg">${PRIMARY.map(g=>`<option ${g===e.group?'selected':''}>${g}</option>`).join('')}<option value="__c" ${custom?'selected':''}>Custom…</option></select></label>
+    <input type="text" id="exgc" placeholder="Custom muscle group" value="${custom?esc(e.group):''}" ${custom?'':'hidden'}>
+    <details><summary class="sub">Secondary / compound muscles</summary>
+      ${Object.entries(MICRO).map(([g,l])=>`<div class="sub" style="margin-top:8px"><b>${g}</b></div><div class="days">${l.map(m=>`<label><input type="checkbox" data-sec="${esc(m)}" ${sec.includes(m)?'checked':''}><span>${m}</span></label>`).join('')}</div>`).join('')}
+      <input type="text" id="secc" style="margin-top:8px" placeholder="Custom secondary muscles (comma separated)" value="${esc(cs)}"></details>
+    <label class="f">Equipment<select id="eq">${Object.entries(EQUIP).map(([k,v])=>`<option value="${k}" ${k===(e.equip||'other')?'selected':''}>${v}</option>`).join('')}</select></label>
+    <label class="f" id="enw">How you enter weight<select id="en"></select></label>
+    <label class="f" id="barw">Bar weight (kg)<input type="number" step="any" id="bar" value="${e.bar??20}"></label>
+    <label class="row" id="unw"><input type="checkbox" id="uni" ${e.uni?'checked':''}> Unilateral (one side at a time)</label>
+    <div class="sub" id="hint"></div>
     <label class="f">Image<input type="file" id="exi" accept="image/*"></label>
     <img id="exp" class="full" style="border-radius:10px;${e.img?'':'display:none'}" ${e.img?`src="${e.img}"`:''} alt="Preview">
-    <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok" id="okb">Save exercise</button></div>
+    <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok">Save exercise</button></div>
   </form>`;
   dlg.showModal();
-  $('#exi').onchange = async ev => { const f=ev.target.files[0]; if(f){ e.img = await resize(f); $('#exp').src=e.img; $('#exp').style.display='block'; } };
+  const sync = keep => {
+    const q = $('#eq').value, o = entryOpts(q), en = $('#en');
+    if(!keep) en.innerHTML = o.map(k=>`<option value="${k}">${ENTRY[k]}</option>`).join('');
+    if(keep) en.innerHTML = o.map(k=>`<option value="${k}" ${k===(e.entry||o[0])?'selected':''}>${ENTRY[k]}</option>`).join('');
+    $('#enw').hidden = !o.length; $('#barw').hidden = q!=='barbell'; $('#unw').hidden = q==='barbell'||q==='bodyweight';
+    $('#hint').textContent = hint(q, en.value, $('#uni').checked);
+  };
+  sync(true);
+  $('#eq').onchange = () => sync(false); $('#en').onchange = $('#uni').onchange = () => sync(true);
+  $('#en').addEventListener('change', () => e.entry = $('#en').value);
+  $('#exg').onchange = () => $('#exgc').hidden = $('#exg').value !== '__c';
+  $('#exi').onchange = async ev => { const f = ev.target.files[0]; if(f){ e.img = await resize(f); $('#exp').src = e.img; $('#exp').style.display = 'block'; } };
   $('#cancel').onclick = () => dlg.close();
   dlg.querySelector('form').onsubmit = async ev => {
     const name = $('#exn').value.trim(); if(!name){ev.preventDefault();return;}
-    e.name = name; e.group = $('#exg').value.trim();
+    e.name = name; e.group = $('#exg').value==='__c' ? ($('#exgc').value.trim()||'Other') : $('#exg').value;
+    e.secondary = [...dlg.querySelectorAll('[data-sec]:checked')].map(x=>x.dataset.sec).concat($('#secc').value.split(',').map(x=>x.trim()).filter(Boolean));
+    e.equip = $('#eq').value; e.entry = $('#en').value || entryOpts(e.equip)[0] || 'kg'; e.bar = +$('#bar').value || 20; e.uni = !$('#unw').hidden && $('#uni').checked;
     const i = S.library.findIndex(x=>x.id===e.id);
     i>=0 ? S.library[i]=e : S.library.push(e);
     await save(); render();
   };
+}
+
+// ---------- splits view ----------
+const DFULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'], ORDER = [1,2,3,4,5,6,0];
+const activeSplit = () => S.splits.find(x=>x.id===S.active && !x.arch) || S.splits.find(x=>!x.arch);
+const todayWorkouts = dow => { const sp = activeSplit(), w = sp && S.workouts.find(x=>x.id===sp.sched[dow]); return w ? [w] : []; };
+function splitsView(){
+  $('#title').textContent = 'Splits'; $('#subtitle').textContent = 'Build workout days, then arrange them into a weekly split';
+  const wn = id => S.workouts.find(w=>w.id===id)?.name, W = S.workouts.filter(w=>!w.arch), SP = S.splits.filter(s=>!s.arch);
+  const oldW = S.workouts.filter(w=>w.arch), oldS = S.splits.filter(s=>s.arch);
+  $('#view').innerHTML = `
+  <div class="dayhead" style="margin-top:8px"><h2>1. Workout days</h2><button class="sm" data-new-day>+ New day</button></div>
+  ${W.map(w => `<div class="card pad">
+      <div class="dayhead"><b>${esc(w.name)}</b><span class="row"><button class="ghost sm" data-edit-day="${w.id}">Edit</button><button class="danger sm" data-arch-day="${w.id}">Archive</button></span></div>
+      <div class="sub">${w.items.map(i=>exById(i.exId)).filter(Boolean).map(e=>esc(e.name)).join(', ')||'No exercises'}</div></div>`).join('')
+    || '<div class="empty">No workout days yet. Create one, for example “Push Day”.</div>'}
+  <div class="dayhead" style="margin-top:22px"><h2>2. Splits</h2><button class="sm" data-new-split ${W.length?'':'disabled'}>+ New split</button></div>
+  ${SP.map(s => { const act = activeSplit()?.id===s.id; return `<div class="card pad">
+      <div class="dayhead"><b>${esc(s.name)} ${act?'<span class="chip">Active</span>':''}</b>
+        <span class="row">${act?'':`<button class="ghost sm" data-activate="${s.id}">Make active</button>`}<button class="ghost sm" data-edit-split="${s.id}">Edit</button><button class="danger sm" data-arch-split="${s.id}">Archive</button></span></div>
+      <table>${ORDER.map(d=>`<tr><td>${DAYS[d]}</td><td>${esc(wn(s.sched[d])||'Rest')}</td></tr>`).join('')}</table></div>`; }).join('')
+    || `<div class="empty">${W.length?'No split yet. Place your workout days on the week.':'Create a workout day first.'}</div>`}
+  ${oldW.length||oldS.length?`<details style="margin-top:16px"><summary class="sub">Archived (${oldW.length+oldS.length})</summary>
+    ${oldW.map(w=>`<div class="item"><span class="nm">Day: ${esc(w.name)}</span><button class="sm" data-restore-day="${w.id}">Restore</button></div>`).join('')}
+    ${oldS.map(s=>`<div class="item"><span class="nm">Split: ${esc(s.name)}</span><button class="sm" data-restore-split="${s.id}">Restore</button></div>`).join('')}</details>`:''}`;
 }
 
 // ---------- workout day form ----------
@@ -347,17 +542,17 @@ function dayForm(id){
       <div><b>Exercises</b> <span class="sub">(sets × reps)</span>
         ${s.items.map((it,ix)=>{const e=exById(it.exId);return e?`<div class="item"><span class="nm">${esc(e.name)}</span>
           <input type="number" min="1" value="${it.sets}" data-sets="${ix}" aria-label="Sets"> ×
-          <input type="number" min="1" value="${it.reps}" data-reps="${ix}" aria-label="Reps">
+          <input type="text" value="${esc(it.reps)}" data-reps="${ix}" aria-label="Reps" style="width:72px">
           <button type="button" class="ghost sm" data-up="${ix}" aria-label="Move up">↑</button>
           <button type="button" class="danger sm" data-rm="${ix}" aria-label="Remove">✕</button></div>`:''}).join('')||'<div class="sub">Nothing added yet.</div>'}
       </div>
-      ${S.library.length?`<div class="row"><select id="pick" class="grow">${S.library.map(e=>`<option value="${e.id}">${esc(e.name)}${e.group?' ('+esc(e.group)+')':''}</option>`).join('')}</select><button type="button" id="addex" class="ghost">Add</button></div>`:'<div class="sub">Add exercises in the Library first.</div>'}
+      ${S.library.length?`<div class="row"><select id="pick" class="grow">${S.library.filter(e=>!e.arch).map(e=>`<option value="${e.id}">${esc(e.name)}${e.group?' ('+esc(e.group)+')':''}</option>`).join('')}</select><button type="button" id="addex" class="ghost">Add</button></div>`:'<div class="sub">Add exercises in the Library first.</div>'}
       <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok">Save day</button></div>
     </form>`;
     $('#cancel').onclick = () => dlg.close();
     $('#spn').oninput = ev => s.name = ev.target.value;
     dlg.querySelectorAll('[data-sets]').forEach(c => c.oninput = () => s.items[c.dataset.sets].sets = +c.value||1);
-    dlg.querySelectorAll('[data-reps]').forEach(c => c.oninput = () => s.items[c.dataset.reps].reps = +c.value||1);
+    dlg.querySelectorAll('[data-reps]').forEach(c => c.oninput = () => s.items[c.dataset.reps].reps = c.value||'10');
     dlg.querySelectorAll('[data-rm]').forEach(c => c.onclick = () => { s.items.splice(+c.dataset.rm,1); draw(); });
     dlg.querySelectorAll('[data-up]').forEach(c => c.onclick = () => { const i=+c.dataset.up; if(i>0){[s.items[i-1],s.items[i]]=[s.items[i],s.items[i-1]]; draw();} });
     const add = $('#addex'); if(add) add.onclick = () => { s.items.push({exId:$('#pick').value, sets:3, reps:10}); draw(); };
@@ -377,7 +572,7 @@ function splitForm(id){
   dlg.innerHTML = `<form method="dialog">
     <h2>${id?'Edit split':'New split'}</h2>
     <label class="f">Split name<input type="text" id="spn" value="${esc(s.name)}" placeholder="Push Pull Legs" required></label>
-    ${ORDER.map(d=>`<label class="f">${DFULL[d]}<select data-d="${d}"><option value="">Rest</option>${S.workouts.map(w=>`<option value="${w.id}" ${s.sched[d]===w.id?'selected':''}>${esc(w.name)}</option>`).join('')}</select></label>`).join('')}
+    ${ORDER.map(d=>`<label class="f">${DFULL[d]}<select data-d="${d}"><option value="">Rest</option>${S.workouts.filter(w=>!w.arch||s.sched[d]===w.id).map(w=>`<option value="${w.id}" ${s.sched[d]===w.id?'selected':''}>${esc(w.name)}</option>`).join('')}</select></label>`).join('')}
     <div class="row"><button type="button" class="ghost grow" id="cancel">Cancel</button><button class="grow" value="ok">Save split</button></div>
   </form>`;
   dlg.showModal();
@@ -397,6 +592,15 @@ document.addEventListener('click', async ev => {
   const t = ev.target.closest('button'); if(!t) return;
   const d = t.dataset;
   if(d.tab){ tab = d.tab; render(); }
+  else if(d.archEx){ if(confirm('Archive this exercise? It leaves your pickers but all logged history is kept. You can restore it any time.')){ exById(d.archEx).arch = true; await save(); render(); } }
+  else if(d.restoreEx){ exById(d.restoreEx).arch = false; await save(); render(); }
+  else if(d.archDay){ if(confirm('Archive this workout day? Logged history is kept and you can restore it.')){ S.workouts.find(w=>w.id===d.archDay).arch = true; await save(); render(); } }
+  else if(d.restoreDay){ S.workouts.find(w=>w.id===d.restoreDay).arch = false; await save(); render(); }
+  else if(d.archSplit){ if(confirm('Archive this split? You can restore it any time.')){ S.splits.find(x=>x.id===d.archSplit).arch = true; if(S.active===d.archSplit) S.active = null; await save(); render(); } }
+  else if(d.restoreSplit){ S.splits.find(x=>x.id===d.restoreSplit).arch = false; await save(); render(); }
+  else if('addGym' in d){ const g = {id:uid(),name:'New gym',cable:5,machine:5}; S.gyms.push(g); S.gym = g.id; await save(); render(); }
+  else if('export' in d){ const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'})); a.download = 'replog-backup-'+dateKey()+'.json'; a.click(); }
+  else if('seed' in d){ seed(); S.seeded = true; await save(); alert('Presets loaded. Nothing you already had was changed.'); }
   else if(d.go){ tab = d.go; render(); }
   else if('newEx' in d) exForm();
   else if(d.editEx) exForm(d.editEx);
@@ -420,7 +624,9 @@ document.addEventListener('click', async ev => {
 const rowOf = t => { const el = t.closest('.set'); return rowsFor(el.closest('.exbody').dataset.k)[+el.dataset.i]; };
 document.addEventListener('input', ev => {
   const t = ev.target; if(!t.closest('.set') || !t.matches('[data-w],[data-r]')) return;
-  rowOf(t)[t.matches('[data-w]') ? 'w' : 'r'] = t.value; saveSoon(); refreshStats();
+  const row = rowOf(t); row[t.matches('[data-w]') ? 'w' : 'r'] = t.value;
+  if(row.d) Object.assign(row, resolve(exById(exOf(t.closest('.exbody').dataset.k)), row.w));
+  saveSoon(); refreshStats();
 });
 document.addEventListener('click', ev => {
   const t = ev.target.closest('button'); if(!t) return;
@@ -430,6 +636,7 @@ document.addEventListener('click', ev => {
     const r = rowOf(t), i = +t.closest('.set').dataset.i, p = last[i] || last[last.length-1];
     r.d = !r.d;
     if(r.d && p){ if(r.w==='') r.w = p.w; if(r.r==='') r.r = p.r; }   // done with no entry = repeat previous
+    if(r.d) Object.assign(r, resolve(exById(exOf(k)), r.w));
   }
   else if('addset' in d) rows.push({w:'',r:'',d:false});
   else if('rmset' in d){ if(rows.length>1) rows.pop(); }
@@ -438,7 +645,7 @@ document.addEventListener('click', ev => {
     const st = card.querySelector('[data-start]'), sp = card.querySelector('[data-step]');
     const start = +st.value || +last[0]?.w, step = sp.value===''?2.5:+sp.value;
     if(!start){ alert('Enter a starting weight.'); return; }
-    rows.forEach((r,i) => { r.w = +(start+step*i).toFixed(2); r.r = card.dataset.reps; r.d = false; });
+    rows.forEach((r,i) => { r.w = +(start+step*i).toFixed(2); r.r = parseInt(card.dataset.reps)||''; r.d = false; });
   } else return;
   saveSoon(); rerender();
 });
@@ -450,13 +657,41 @@ $('#install').onclick = async () => { deferred.prompt(); await deferred.userChoi
 if('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
 
 // ---------- start ----------
-(async () => { const s = await kv.get('state'); if(s) S = {library:[],workouts:[],splits:[],logs:{},active:null,...s};
+(async () => { const s = await kv.get('state'); if(s){ await kv.set('backup_before_update', s); S = {...S,...s}; }
+  if(!S.gyms?.length) S.gyms = [{id:'g1',name:'My gym',cable:5,machine:5}];
+  if(!S.gym) S.gym = S.gyms[0].id;
   if(S.splits.some(x=>x.items)){   // migrate old splits -> workout days + one weekly split
     S.workouts = S.splits.map(x=>({id:x.id,name:x.name,items:x.items}));
     const sched = {}; S.splits.forEach(x=>(x.days||[]).forEach(d=>sched[d]=x.id));
     S.splits = [{id:uid(),name:'My split',sched}]; S.active = S.splits[0].id; await save();
   }
+  if(!S.seeded){ seed(); S.seeded = true; await save(); }
+  navigator.storage?.persist?.();
   render(); })();
+// ---------- settings, config & misc events ----------
+document.addEventListener('input', ev => {
+  if(ev.target.id !== 'q') return; const q = ev.target.value.toLowerCase();
+  document.querySelectorAll('.grid .card').forEach(c => c.style.display = c.textContent.toLowerCase().includes(q) ? '' : 'none');
+});
+document.addEventListener('change', async ev => {
+  const t = ev.target, d = t.dataset;
+  if('gym' in d){ S.gym = t.value; await save(); tab==='dash' ? rerender() : render(); }
+  else if(d.gset){ const g = gymNow(); g[d.gset] = d.gset==='name' ? t.value : (+t.value||0); await save(); }
+  else if('bw' in d){ S.bw = +t.value||0; await save(); }
+  else if(d.cfg){
+    const e = exById(exOf(t.closest('.exbody').dataset.k));
+    e[d.cfg] = d.cfg==='uni' ? t.checked : d.cfg==='bar' ? (+t.value||20) : t.value;
+    await save(); rerender();
+  }
+  else if('import' in d && t.files[0]){
+    try{
+      const j = JSON.parse(await t.files[0].text()); if(!Array.isArray(j.library)) throw 0;
+      if(!confirm('Import replaces the data in the app. A safety copy of your current data is kept inside the app first. Continue?')) return;
+      await kv.set('backup_before_import', S);
+      S = {...S, ...j}; await save(); render();
+    }catch(_){ alert('That file is not a valid Rep Log backup.'); }
+  }
+});
 </script>
 </body>
 </html>
